@@ -44,6 +44,7 @@ runConn (sock, _) chan myId = do
 
   -- fork off a thread for reading from the duplicated channel
   reader <- forkIO $ fix $ \loop -> do
+    -- fix f is passing f itself so it can be called again
     (otherId, line) <- readChan commLine
     when (myId /= otherId) $ hPutStrLn hdl line -- don't echo your own messages
     loop
