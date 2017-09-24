@@ -86,6 +86,12 @@ newMessage clientId bytestring chatsRef =
         Nothing -> return chats
         Just chatMsg -> return $ chats ++ [ chatMsg ]
 
+loadMessages :: WS.Connection -> ClientId -> Concurrent.MVar Chats -> IO ()
+loadMessages conn clientId chatsRef = do
+  chats <- Concurrent.readMVar chatsRef
+  Monad.forM_ chats $ \chatMsg ->
+    WS.sendTextData conn $ Aeson.encode chatMsg
+
 disconnectClient :: ClientId -> Concurrent.MVar State -> IO ()
 disconnectClient clientId stateRef =
   Concurrent.modifyMVar_ stateRef $ \state ->
@@ -117,6 +123,7 @@ wsApp stateRef chatsRef pendingConn = do
   clientId <- connectClient conn stateRef
   bytestring <- joinRoom clientId chatsRef
   broadcast clientId stateRef bytestring
+  loadMessages conn clientId chatsRef
   WS.forkPingThread conn 30
   Exception.finally
     (listen conn clientId stateRef chatsRef)
