@@ -20,8 +20,7 @@ main =
      }
 
 type alias Model =
-  { pokes : Int
-  , chats : List ChatMsg
+  { chats : List ChatMsg
   , chatBoxText: Message
   , username : Username
   , error: Maybe Error
@@ -53,13 +52,12 @@ type Msg
 
 init : Flags -> (Model, Cmd Msg)
 init { username } =
-  (Model 0 [] "" username Nothing, Cmd.none)
+  (Model [] "" username Nothing, Cmd.none)
 
 view : Model -> Html Msg
 view model =
   div []
-    [ p [] [ text <| "Pokes: " ++ toString model ]
-    , div []
+    [ div []
         (List.map viewMessage model.chats)
     , Html.form [ onSubmit SendChatMsg ]
         [ input [ type_ "text", onInput TypeMsg, value model.chatBoxText ] [] ]
@@ -123,9 +121,6 @@ setChatBoxText value model = { model | chatBoxText = value }
 
 setError : Maybe Error -> Model -> Model
 setError error model = { model | error = error }
-
-incPokes : Model -> Model
-incPokes model = { model | pokes = model.pokes + 1 }
 
 appendMsg : ChatMsg -> Model -> Model
 appendMsg msg model = { model | chats = model.chats ++ [msg] }
