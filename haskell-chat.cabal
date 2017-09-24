@@ -25,6 +25,8 @@ executable chat-web
                      , websockets
                      , http-types
                      , safe
+                     , aeson
+                     , bytestring
   default-language:    Haskell2010
 
 executable chat-command
