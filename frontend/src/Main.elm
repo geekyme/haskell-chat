@@ -10,9 +10,9 @@ import Json.Decode as JD
 import Json.Encode as JE
 import Json.Decode.Pipeline as JDP
 
-main : Program Never Model Msg
+main : Program Flags Model Msg
 main =
-  Html.program
+  Html.programWithFlags
      { init          = init
      , update        = update
      , view          = view
@@ -21,6 +21,7 @@ main =
 
 type alias Model =
   { chats : List ChatMsg
+  , username : Username
   , chatBoxText: Message
   , error: Maybe Error
   }
@@ -31,6 +32,10 @@ type alias Message = String
 type alias ChatMsg =
   { username : Username
   , message : Message
+  }
+
+type alias Flags =
+  { username : Username
   }
 
 decoderChatMsg : JD.Decoder ChatMsg
@@ -45,9 +50,10 @@ type Msg
   | SendChatMsg
   | AppError Error
 
-init : (Model, Cmd Msg)
-init =
-  (Model [] "" Nothing, Cmd.none)
+init : Flags -> (Model, Cmd Msg)
+init { username } =
+  Model [] username "" Nothing
+    |> sendSetUsername
 
 view : Model -> Html Msg
 view model =
@@ -97,13 +103,34 @@ update msg model =
     AppError error ->
       setError (Just error) model ! []
 
+sendSetUsername : Model -> (Model, Cmd msg)
+sendSetUsername model =
+  let
+    value =
+      JE.object
+        [ ("tag", JE.string "SetUsernameData_")
+        , ("contents"
+          , JE.object
+              [ ("username", JE.string model.username)
+              ]
+          )
+        ]
+
+    msg = JE.encode 0 value
+  in
+    model ! [WebSocket.send wsUrl msg]
 
 sendChatMsg : Model -> (Model, Cmd msg)
 sendChatMsg model =
   let
     value =
       JE.object
-        [ ("message", JE.string model.chatBoxText)
+        [ ("tag", JE.string "ChatMsgData_")
+        , ("contents"
+          , JE.object
+              [ ("message", JE.string model.chatBoxText)
+              ]
+          )
         ]
 
     msg = JE.encode 0 value

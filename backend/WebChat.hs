@@ -5,7 +5,7 @@
 
 module Main where
 
-import Data.Aeson as Aeson (ToJSON, FromJSON, encode, decode)
+import Data.Aeson as Aeson (ToJSON, FromJSON, encode, decode, eitherDecode)
 import GHC.Generics
 import qualified Control.Concurrent as Concurrent
 import qualified Control.Exception as Exception
@@ -21,14 +21,16 @@ import qualified Network.WebSockets as WS
 import qualified Safe
 import Data.ByteString.Lazy (ByteString)
 import Data.ByteString.Char8 (pack)
+import qualified Data.Map as Map
 
 main :: IO ()
 main = do
   state <- Concurrent.newMVar []
   chats <- Concurrent.newMVar []
+  usernames <- Concurrent.newMVar Map.empty
   Warp.run 3000 $ WS.websocketsOr
     WS.defaultConnectionOptions
-    (wsApp state chats)
+    (wsApp state chats usernames)
     httpApp
 
 httpApp :: Wai.Application
@@ -38,7 +40,8 @@ httpApp _ respond =
 instance ToJSON ChatMsg
 instance FromJSON ChatMsg
 
-instance ToJSON IncomingData
+instance FromJSON ChatMsgData
+instance FromJSON SetUsernameData
 instance FromJSON IncomingData
 
 type ClientId = Int
@@ -47,16 +50,25 @@ type State = [Client]
 type Username = String
 type Message = String
 type Chats = [ChatMsg]
-
+type Usernames = Map.Map ClientId Username
 data ChatMsg =
   ChatMsg
     { username :: Username
     , message :: Message
     } deriving Generic
 
-data IncomingData = IncomingData
+data ChatMsgData = ChatMsgData
   { message :: Message
   } deriving Generic
+
+data SetUsernameData = SetUsernameData
+  { username :: Username
+  } deriving (Generic, Show)
+
+data IncomingData
+  = ChatMsgData_ ChatMsgData
+  | SetUsernameData_ SetUsernameData
+  deriving Generic
 
 nextId :: State -> ClientId
 nextId =
@@ -72,21 +84,24 @@ withoutClient :: ClientId -> State -> State
 withoutClient clientId =
   List.filter ((/=) clientId . fst)
 
-joinRoom :: ClientId -> Concurrent.MVar Chats -> IO ByteString
-joinRoom clientId chatsRef =
+joinRoom :: ClientId -> Concurrent.MVar Usernames -> Concurrent.MVar Chats -> IO ByteString
+joinRoom clientId usernamesRef chatsRef = do
+  un <- getUsername clientId usernamesRef
   Concurrent.modifyMVar chatsRef $ \chats -> do
-    let chatMsg = ChatMsg "system" $ show clientId ++ " has joined the room."
+    let chatMsg = ChatMsg "system" $ un ++ " has joined the room."
     return (chats ++ [ chatMsg ], Aeson.encode chatMsg)
 
-leaveRoom :: ClientId -> Concurrent.MVar Chats -> IO ByteString
-leaveRoom clientId chatsRef =
+leaveRoom :: ClientId -> Concurrent.MVar Usernames -> Concurrent.MVar Chats -> IO ByteString
+leaveRoom clientId usernamesRef chatsRef = do
+  un <- getUsername clientId usernamesRef
   Concurrent.modifyMVar chatsRef $ \chats -> do
-    let chatMsg = ChatMsg "system" $ show clientId ++ " has left the room."
+    let chatMsg = ChatMsg "system" $ un ++ " has left the room."
     return (chats ++ [ chatMsg ], Aeson.encode chatMsg)
 
-newMessage :: ClientId -> ChatMsg -> Concurrent.MVar Chats -> IO ByteString
-newMessage clientId chatMsg chatsRef =
+newMessage :: Username -> Message -> Concurrent.MVar Chats -> IO ByteString
+newMessage un msg chatsRef =
   Concurrent.modifyMVar chatsRef $ \chats -> do
+    let chatMsg = ChatMsg un msg
     return (chats ++ [ chatMsg ], Aeson.encode chatMsg)
 
 loadMessages :: WS.Connection -> ClientId -> Concurrent.MVar Chats -> IO ()
@@ -100,19 +115,39 @@ disconnectClient clientId stateRef =
   Concurrent.modifyMVar_ stateRef $ \state ->
     return $ withoutClient clientId state
 
-listen :: WS.Connection -> ClientId -> Concurrent.MVar State -> Concurrent.MVar Chats -> IO ()
-listen conn clientId stateRef chatsRef =
+listen :: WS.Connection -> ClientId -> Concurrent.MVar State -> Concurrent.MVar Chats -> Concurrent.MVar Usernames -> IO ()
+listen conn clientId stateRef chatsRef usernamesRef =
   Monad.forever $ do
     bytestring <- WS.receiveData conn
-    let m =  Aeson.decode bytestring :: Maybe IncomingData
-    case m of
-      Nothing -> do
+    let e =  Aeson.eitherDecode bytestring :: Either String IncomingData
+    case e of
+      Left e -> do
+        putStrLn e
         return ()
-      Just dat -> do
-        let chatMsg = ChatMsg (show clientId) (message (dat :: IncomingData))
-        messageWithUser <- newMessage clientId chatMsg chatsRef
-        emit stateRef messageWithUser
-        return ()
+      Right incomingData -> do
+        case incomingData of
+          ChatMsgData_ dat -> do
+            let msg = message (dat :: ChatMsgData)
+            un <- getUsername clientId usernamesRef
+            messageWithUser <- newMessage un msg chatsRef
+            emit stateRef messageWithUser
+            return ()
+          SetUsernameData_ dat -> do
+            let un = username (dat :: SetUsernameData)
+            setUsername clientId un usernamesRef
+            emit stateRef $ Aeson.encode $ ChatMsg "system" $ show clientId ++ " has set username to " ++ un
+            return ()
+
+getUsername :: ClientId -> Concurrent.MVar Usernames -> IO String
+getUsername clientId usernamesRef = do
+  usernames <- Concurrent.readMVar usernamesRef
+  let defaultUsername = show clientId
+  return $ Map.findWithDefault defaultUsername clientId usernames
+
+setUsername :: ClientId -> Username -> Concurrent.MVar Usernames -> IO ()
+setUsername clientId un usernamesRef =
+  Concurrent.modifyMVar_ usernamesRef $ \usernames ->
+    return $ Map.insert clientId un usernames
 
 broadcast :: ClientId -> Concurrent.MVar State -> ByteString -> IO ()
 broadcast clientId stateRef msg = do
@@ -127,18 +162,18 @@ emit stateRef msg = do
   Monad.forM_ clients $ \(_, conn) ->
     WS.sendTextData conn msg
 
-wsApp :: Concurrent.MVar State -> Concurrent.MVar Chats -> WS.ServerApp
-wsApp stateRef chatsRef pendingConn = do
+wsApp :: Concurrent.MVar State -> Concurrent.MVar Chats -> Concurrent.MVar Usernames -> WS.ServerApp
+wsApp stateRef chatsRef usernamesRef pendingConn = do
   conn <- WS.acceptRequest pendingConn
   clientId <- connectClient conn stateRef
-  bytestring <- joinRoom clientId chatsRef
+  bytestring <- joinRoom clientId usernamesRef chatsRef
   broadcast clientId stateRef bytestring
   loadMessages conn clientId chatsRef
   WS.forkPingThread conn 30
   Exception.finally
-    (listen conn clientId stateRef chatsRef)
+    (listen conn clientId stateRef chatsRef usernamesRef)
     (do
-      bytestring <- leaveRoom clientId chatsRef
+      bytestring <- leaveRoom clientId usernamesRef chatsRef
       broadcast clientId stateRef bytestring
       disconnectClient clientId stateRef
     )
