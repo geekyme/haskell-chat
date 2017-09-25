@@ -110,10 +110,13 @@ loadMessages conn clientId chatsRef = do
   Monad.forM_ chats $ \chatMsg ->
     WS.sendTextData conn $ Aeson.encode chatMsg
 
-disconnectClient :: ClientId -> Concurrent.MVar State -> IO ()
-disconnectClient clientId stateRef =
+disconnectClient :: ClientId -> Concurrent.MVar State -> Concurrent.MVar Usernames -> IO ()
+disconnectClient clientId stateRef usernamesRef = do
   Concurrent.modifyMVar_ stateRef $ \state ->
     return $ withoutClient clientId state
+
+  Concurrent.modifyMVar_ usernamesRef $ \usernames ->
+    return $ Map.delete clientId usernames
 
 listen :: WS.Connection -> ClientId -> Concurrent.MVar State -> Concurrent.MVar Chats -> Concurrent.MVar Usernames -> IO ()
 listen conn clientId stateRef chatsRef usernamesRef =
@@ -175,5 +178,5 @@ wsApp stateRef chatsRef usernamesRef pendingConn = do
     (do
       bytestring <- leaveRoom clientId usernamesRef chatsRef
       broadcast clientId stateRef bytestring
-      disconnectClient clientId stateRef
+      disconnectClient clientId stateRef usernamesRef
     )
