@@ -10,9 +10,9 @@ import Json.Decode as JD
 import Json.Encode as JE
 import Json.Decode.Pipeline as JDP
 
-main : Program Flags Model Msg
+main : Program Never Model Msg
 main =
-  Html.programWithFlags
+  Html.program
      { init          = init
      , update        = update
      , view          = view
@@ -22,7 +22,6 @@ main =
 type alias Model =
   { chats : List ChatMsg
   , chatBoxText: Message
-  , username : Username
   , error: Maybe Error
   }
 
@@ -40,19 +39,15 @@ decoderChatMsg =
     |> JDP.required "username" JD.string
     |> JDP.required "message" JD.string
 
-type alias Flags =
-  { username : Username
-  }
-
 type Msg
   = ReceiveChatMsg ChatMsg
   | TypeMsg Message
   | SendChatMsg
   | AppError Error
 
-init : Flags -> (Model, Cmd Msg)
-init { username } =
-  (Model [] "" username Nothing, Cmd.none)
+init : (Model, Cmd Msg)
+init =
+  (Model [] "" Nothing, Cmd.none)
 
 view : Model -> Html Msg
 view model =
@@ -108,8 +103,7 @@ sendChatMsg model =
   let
     value =
       JE.object
-        [ ("username", JE.string model.username)
-        , ("message", JE.string model.chatBoxText)
+        [ ("message", JE.string model.chatBoxText)
         ]
 
     msg = JE.encode 0 value

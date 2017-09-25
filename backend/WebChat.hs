@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 
 module Main where
 
@@ -37,6 +38,9 @@ httpApp _ respond =
 instance ToJSON ChatMsg
 instance FromJSON ChatMsg
 
+instance ToJSON IncomingData
+instance FromJSON IncomingData
+
 type ClientId = Int
 type Client = (ClientId, WS.Connection)
 type State = [Client]
@@ -49,6 +53,10 @@ data ChatMsg =
     { username :: Username
     , message :: Message
     } deriving Generic
+
+data IncomingData = IncomingData
+  { message :: Message
+  } deriving Generic
 
 nextId :: State -> ClientId
 nextId =
@@ -76,15 +84,10 @@ leaveRoom clientId chatsRef =
     let chatMsg = ChatMsg "system" $ show clientId ++ " has left the room."
     return (chats ++ [ chatMsg ], Aeson.encode chatMsg)
 
-newMessage :: ClientId -> ByteString -> Concurrent.MVar Chats -> IO ()
-newMessage clientId bytestring chatsRef =
-  let
-    m =  Aeson.decode bytestring :: Maybe ChatMsg
-  in
-    Concurrent.modifyMVar_ chatsRef $ \chats -> do
-      case m of
-        Nothing -> return chats
-        Just chatMsg -> return $ chats ++ [ chatMsg ]
+newMessage :: ClientId -> ChatMsg -> Concurrent.MVar Chats -> IO ByteString
+newMessage clientId chatMsg chatsRef =
+  Concurrent.modifyMVar chatsRef $ \chats -> do
+    return (chats ++ [ chatMsg ], Aeson.encode chatMsg)
 
 loadMessages :: WS.Connection -> ClientId -> Concurrent.MVar Chats -> IO ()
 loadMessages conn clientId chatsRef = do
@@ -101,8 +104,15 @@ listen :: WS.Connection -> ClientId -> Concurrent.MVar State -> Concurrent.MVar 
 listen conn clientId stateRef chatsRef =
   Monad.forever $ do
     bytestring <- WS.receiveData conn
-    newMessage clientId bytestring chatsRef
-    emit stateRef bytestring
+    let m =  Aeson.decode bytestring :: Maybe IncomingData
+    case m of
+      Nothing -> do
+        return ()
+      Just dat -> do
+        let chatMsg = ChatMsg (show clientId) (message (dat :: IncomingData))
+        messageWithUser <- newMessage clientId chatMsg chatsRef
+        emit stateRef messageWithUser
+        return ()
 
 broadcast :: ClientId -> Concurrent.MVar State -> ByteString -> IO ()
 broadcast clientId stateRef msg = do
